@@ -1,0 +1,52 @@
+# ============================================================
+# Album Spectrogram Generator — Docker Compose
+#
+# 使用方式:
+#   1. 复制 .env.example 为 .env，填入 IMGBB_API_KEY
+#   2. 修改下面的 volumes 路径为你 NAS 上的实际路径
+#   3. docker compose up -d
+# ============================================================
+
+services:
+  spectrogram:
+    build: .
+    image: fuxe/album-spectrogram:latest
+    container_name: album-spectrogram
+    restart: unless-stopped
+
+    ports:
+      - "5000:5000"
+
+    env_file:
+      - .env
+
+    environment:
+      # 时区设置（按你的 NAS 所在时区调整）
+      - TZ=Asia/Shanghai
+
+    volumes:
+      # 音乐文件目录 — 将 NAS 上的音乐路径映射进容器
+      # 格式: 宿主机路径:容器内路径:ro (只读)
+      # 示例: /volume1/music:/music:ro
+      - /path/to/your/music:/music:ro
+
+      # 输出目录 — 频谱图输出保存位置（持久化）
+      # 示例: /volume1/docker/spectrogram/output:/app/output
+      - spectrogram-output:/app/output
+
+    # 资源限制（可选，根据 NAS 性能调整）
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: "2.0"
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  spectrogram-output:
+    name: spectrogram-output

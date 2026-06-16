@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Album Spectrogram Generator — 专辑频谱图生成器</title>
+    <meta name="description" content="批量生成 FLAC 专辑频谱图，自动拼接输出">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+
+    <!-- ===== 头部 ===== -->
+    <header id="app-header">
+        <div class="header-content">
+            <div class="logo">
+                <div class="logo-icon">
+                    <svg width="32" height="32" viewBox="0 0 32 32" fill="none">
+                        <rect x="2" y="18" width="3" height="10" rx="1.5" fill="url(#g1)"/>
+                        <rect x="7" y="12" width="3" height="16" rx="1.5" fill="url(#g1)"/>
+                        <rect x="12" y="6" width="3" height="22" rx="1.5" fill="url(#g1)"/>
+                        <rect x="17" y="10" width="3" height="18" rx="1.5" fill="url(#g1)"/>
+                        <rect x="22" y="14" width="3" height="14" rx="1.5" fill="url(#g1)"/>
+                        <rect x="27" y="8" width="3" height="20" rx="1.5" fill="url(#g1)"/>
+                        <defs>
+                            <linearGradient id="g1" x1="0" y1="0" x2="0" y2="32" gradientUnits="userSpaceOnUse">
+                                <stop stop-color="#a78bfa"/>
+                                <stop offset="1" stop-color="#3b82f6"/>
+                            </linearGradient>
+                        </defs>
+                    </svg>
+                </div>
+                <div>
+                    <h1>Spectrogram Generator</h1>
+                    <p class="subtitle">专辑频谱图生成器 · SoX + Pillow</p>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <!-- ===== 主体 ===== -->
+    <main id="app-main">
+        <!-- 左栏：控制面板 -->
+        <section class="panel control-panel" id="control-panel">
+            <h2 class="panel-title">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>
+                配置
+            </h2>
+
+            <!-- 文件夹路径 -->
+            <div class="form-group">
+                <label for="folder-path">FLAC 文件夹路径</label>
+                <div class="input-row">
+                    <input type="text" id="folder-path" placeholder="/path/to/music/album" spellcheck="false" autocomplete="off">
+                    <button id="btn-scan" class="btn btn-secondary" title="扫描文件夹">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                        扫描
+                    </button>
+                </div>
+            </div>
+
+            <!-- 输出目录 -->
+            <div class="form-group">
+                <label for="output-dir">输出目录</label>
+                <input type="text" id="output-dir" placeholder="留空使用默认输出目录" spellcheck="false" autocomplete="off">
+            </div>
+
+            <!-- 高级配置 -->
+            <details class="config-details" open>
+                <summary>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+                    高级设置
+                </summary>
+
+                <div class="config-grid">
+                    <div class="form-group">
+                        <label for="cfg-width">宽度 (px)</label>
+                        <input type="number" id="cfg-width" value="1920" min="320" max="7680" step="10">
+                    </div>
+                    <div class="form-group">
+                        <label for="cfg-height">高度 (px)</label>
+                        <input type="number" id="cfg-height" value="400" min="100" max="2000" step="10">
+                    </div>
+                    <div class="form-group">
+                        <label for="cfg-dynamic-range">动态范围 (dB)</label>
+                        <input type="number" id="cfg-dynamic-range" value="90" min="20" max="180" step="5">
+                    </div>
+                    <div class="form-group">
+                        <label for="cfg-gap">间距 (px)</label>
+                        <input type="number" id="cfg-gap" value="2" min="0" max="50" step="1">
+                    </div>
+                    <div class="form-group">
+                        <label for="cfg-direction">拼接方向</label>
+                        <select id="cfg-direction">
+                            <option value="vertical">纵向拼接</option>
+                            <option value="horizontal">横向拼接</option>
+                        </select>
+                    </div>
+                    <div class="form-group form-checkbox">
+                        <label>
+                            <input type="checkbox" id="cfg-labels" checked>
+                            <span class="checkmark"></span>
+                            显示曲目标签
+                        </label>
+                    </div>
+                    <div class="form-group" style="grid-column: 1 / -1;">
+                        <div class="config-divider">图床设置</div>
+                    </div>
+                    <div class="form-group" style="grid-column: 1 / -1;">
+                        <label for="cfg-imgbb-key">imgbb API Key</label>
+                        <div class="input-row">
+                            <input type="password" id="cfg-imgbb-key" placeholder="在 api.imgbb.com 免费申请" spellcheck="false" autocomplete="off">
+                            <button id="btn-toggle-key" class="btn btn-secondary btn-icon" title="显示/隐藏" type="button">
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+                            </button>
+                        </div>
+                    </div>
+                    <div class="form-group form-checkbox" style="grid-column: 1 / -1;">
+                        <label>
+                            <input type="checkbox" id="cfg-auto-upload">
+                            <span class="checkmark"></span>
+                            生成后自动上传图床
+                        </label>
+                    </div>
+                    <div class="form-group form-checkbox" style="grid-column: 1 / -1;">
+                        <label>
+                            <input type="checkbox" id="cfg-remember-key" checked>
+                            <span class="checkmark"></span>
+                            记住 API Key
+                        </label>
+                    </div>
+                </div>
+            </details>
+
+            <!-- 生成按钮 -->
+            <button id="btn-generate" class="btn btn-primary btn-large" disabled>
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+                生成频谱图
+            </button>
+
+            <!-- 扫描结果 -->
+            <div id="scan-results" class="scan-results hidden">
+                <h3 class="section-title">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/></svg>
+                    扫描结果
+                </h3>
+                <div id="scan-summary" class="scan-summary"></div>
+                <div id="album-tree" class="album-tree"></div>
+            </div>
+
+            <!-- Tracklist 信息 -->
+            <div id="tracklist-section" class="tracklist-section hidden">
+                <h3 class="section-title">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
+                    Tracklist
+                </h3>
+                <div id="tracklist-content" class="tracklist-content"></div>
+                <div class="tracklist-actions">
+                    <div class="format-tabs">
+                        <button class="format-tab active" data-format="plain" title="纯文本">Text</button>
+                        <button class="format-tab" data-format="bbcode" title="BBCode">BBCode</button>
+                        <button class="format-tab" data-format="markdown" title="Markdown">MD</button>
+                    </div>
+                    <button id="btn-copy-tracklist" class="btn btn-secondary btn-small" title="复制 Tracklist">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
+                        复制
+                    </button>
+                </div>
+            </div>
+        </section>
+
+        <!-- 右栏：结果面板 -->
+        <section class="panel results-panel" id="results-panel">
+            <!-- 进度区域 -->
+            <div id="progress-section" class="progress-section hidden">
+                <h2 class="panel-title">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+                    处理进度
+                </h2>
+                <div class="progress-bar-container">
+                    <div class="progress-bar" id="progress-bar">
+                        <div class="progress-fill" id="progress-fill"></div>
+                    </div>
+                    <span class="progress-text" id="progress-text">0%</span>
+                </div>
+                <div class="progress-detail" id="progress-detail"></div>
+                <div class="progress-log" id="progress-log"></div>
+            </div>
+
+            <!-- 结果画廊 -->
+            <div id="gallery-section">
+                <h2 class="panel-title">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
+                    频谱图结果
+                </h2>
+                <div id="gallery" class="gallery">
+                    <div class="gallery-empty">
+                        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round" opacity="0.3"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
+                        <p>尚无结果</p>
+                        <p class="hint">扫描文件夹并生成频谱图后，结果将显示在这里</p>
+                    </div>
+                </div>
+
+                <!-- 上传结果 -->
+                <div id="upload-results" class="upload-results hidden">
+                    <h3 class="section-title">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                        上传结果
+                    </h3>
+                    <div id="upload-links" class="upload-links"></div>
+                    <div class="upload-actions">
+                        <div class="format-tabs">
+                            <button class="link-format-tab active" data-format="direct" title="直链">直链</button>
+                            <button class="link-format-tab" data-format="bbcode" title="BBCode">[img]</button>
+                            <button class="link-format-tab" data-format="markdown" title="Markdown">MD</button>
+                            <button class="link-format-tab" data-format="html" title="HTML">HTML</button>
+                        </div>
+                        <button id="btn-copy-all-links" class="btn btn-secondary btn-small" title="复制所有链接">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
+                            复制全部
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <!-- ===== 图片灯箱 ===== -->
+    <div id="lightbox" class="lightbox hidden" onclick="closeLightbox(event)">
+        <div class="lightbox-content">
+            <button class="lightbox-close" onclick="closeLightbox(event)" title="关闭">&times;</button>
+            <img id="lightbox-img" src="" alt="频谱图预览">
+        </div>
+    </div>
+
+    <!-- Toast 通知 -->
+    <div id="toast-container" class="toast-container"></div>
+
+    <script src="/static/js/app.js"></script>
+</body>
+</html>
