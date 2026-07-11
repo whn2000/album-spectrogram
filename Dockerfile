@@ -18,6 +18,7 @@ ENV PYTHONDONTWRITEBYTECODE=1
 RUN apt-get update && apt-get install -y --no-install-recommends \
     sox \
     libsox-fmt-all \
+    ffmpeg \
     fonts-noto-cjk \
     fonts-dejavu-core \
     && rm -rf /var/lib/apt/lists/*
@@ -47,7 +48,7 @@ CMD ["gunicorn", \
      "--bind", "0.0.0.0:5000", \
      "--workers", "2", \
      "--threads", "4", \
-     "--timeout", "600", \
+     "--timeout", "0", \
      "--access-logfile", "-", \
      "--error-logfile", "-", \
      "app:app"]

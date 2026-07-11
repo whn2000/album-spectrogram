@@ -13,7 +13,9 @@ from pathlib import Path
 from collections import defaultdict
 from typing import Optional
 
-from mutagen.flac import FLAC
+import mutagen
+
+from spectrogram import scan_for_audio
 
 logger = logging.getLogger(__name__)
 
@@ -22,9 +24,9 @@ logger = logging.getLogger(__name__)
 # 1. 单文件元数据读取
 # ---------------------------------------------------------------------------
 
-def read_flac_metadata(filepath: str) -> dict:
+def read_audio_metadata(filepath: str) -> dict:
     """
-    读取单个 FLAC 文件的元数据标签及音频信息。
+    读取单个音频文件的元数据标签及音频信息。
 
     返回:
         {
@@ -45,20 +47,71 @@ def read_flac_metadata(filepath: str) -> dict:
         }
     """
     try:
-        audio = FLAC(filepath)
+        audio = mutagen.File(filepath)
+        if audio is None:
+            return _empty_metadata(filepath)
     except Exception as e:
-        logger.error("无法读取 FLAC 文件 [%s]: %s", filepath, e)
+        logger.error("无法读取音频文件 [%s]: %s", filepath, e)
         return _empty_metadata(filepath)
 
     def _tag(key: str, default: str = "Unknown") -> str:
-        """安全获取标签值（Vorbis Comment 值为列表）。"""
-        values = audio.get(key)
-        if values and len(values) > 0:
-            return str(values[0]).strip()
+        """安全获取标签值"""
+        # mutagen.File 返回的对象可能因格式不同而有不同的标签结构
+        # 对于大部分格式 (FLAC, MP3 ID3, MP4), get() 会返回列表或可以直接作为字符串
+        # 这里做兼容处理
+        if not audio.tags:
+            return default
+            
+        # Try exact key
+        values = audio.tags.get(key)
+        
+        # Try ID3 keys for MP3 if exact key not found
+        if values is None:
+            id3_keys = {
+                "title": ["TIT2"],
+                "artist": ["TPE1"],
+                "album": ["TALB"],
+                "albumartist": ["TPE2"],
+                "tracknumber": ["TRCK"],
+                "discnumber": ["TPOS"],
+                "genre": ["TCON"],
+                "date": ["TDRC", "TYER"]
+            }
+            if key in id3_keys:
+                for idk in id3_keys[key]:
+                    values = audio.tags.get(idk)
+                    if values is not None:
+                        break
+                        
+        # Try MP4 keys
+        if values is None:
+            mp4_keys = {
+                "title": ["\xa9nam"],
+                "artist": ["\xa9ART"],
+                "album": ["\xa9alb"],
+                "albumartist": ["aART"],
+                "tracknumber": ["trkn"],
+                "discnumber": ["disk"],
+                "genre": ["\xa9gen"],
+                "date": ["\xa9day"]
+            }
+            if key in mp4_keys:
+                for mpk in mp4_keys[key]:
+                    values = audio.tags.get(mpk)
+                    if values is not None:
+                        break
+
+        if values:
+            if isinstance(values, list) and len(values) > 0:
+                # Some tags like tracknumber in MP4 might be a tuple inside a list
+                if isinstance(values[0], tuple):
+                    return str(values[0][0])
+                return str(values[0]).strip()
+            return str(values).strip()
         return default
 
     # 时长
-    duration = audio.info.length if audio.info else 0.0
+    duration = audio.info.length if hasattr(audio, 'info') and audio.info else 0.0
 
     return {
         "title": _tag("title", os.path.splitext(os.path.basename(filepath))[0]),
@@ -71,10 +124,10 @@ def read_flac_metadata(filepath: str) -> dict:
         "date": _tag("date", ""),
         "duration": round(duration, 2),
         "duration_fmt": _format_duration(duration),
-        "sample_rate": audio.info.sample_rate if audio.info else 0,
-        "channels": audio.info.channels if audio.info else 0,
-        "bits_per_sample": audio.info.bits_per_sample if audio.info else 0,
-        "bitrate": audio.info.bitrate if audio.info else 0,
+        "sample_rate": getattr(audio.info, 'sample_rate', 0) if hasattr(audio, 'info') else 0,
+        "channels": getattr(audio.info, 'channels', 0) if hasattr(audio, 'info') else 0,
+        "bits_per_sample": getattr(audio.info, 'bits_per_sample', 0) if hasattr(audio, 'info') else 0,
+        "bitrate": getattr(audio.info, 'bitrate', 0) if hasattr(audio, 'info') else 0,
     }
 
 
@@ -126,37 +179,19 @@ def _format_duration(seconds: float) -> str:
 
 def extract_tracklist(folder_path: str) -> list[dict]:
     """
-    扫描文件夹中的所有 FLAC 文件，按文件夹分组提取 tracklist。
+    扫描文件夹中的所有支持的音频文件，按文件夹分组提取 tracklist。
 
     返回:
         [
             {
-                "folder": str,
-                "album_name": str,
-                "artist": str,
-                "albumartist": str,
-                "date": str,
-                "genre": str,
-                "audio_info": { "sample_rate", "bits_per_sample", "channels" },
-                "tracks": [
-                    { "number": str, "title": str, "artist": str, "duration": float, "duration_fmt": str },
-                    ...
-                ],
-                "total_duration": float,
-                "total_duration_fmt": str,
-            },
-            ...
-        ]
+                ...
     """
     root = Path(folder_path)
     if not root.exists() or not root.is_dir():
         raise FileNotFoundError(f"路径不存在或不是目录: {folder_path}")
 
-    # 按文件夹分组收集 FLAC 文件
-    folder_files: dict[str, list[str]] = defaultdict(list)
-    for flac_file in sorted(root.rglob("*.flac")):
-        parent = str(flac_file.parent)
-        folder_files[parent].append(str(flac_file))
+    # 使用 spectrogram.py 中的 scan_for_audio
+    folder_files = scan_for_audio(folder_path)
 
     if not folder_files:
         return []
@@ -165,7 +200,7 @@ def extract_tracklist(folder_path: str) -> list[dict]:
     for folder, files in sorted(folder_files.items()):
         tracks_meta = []
         for f in sorted(files):
-            meta = read_flac_metadata(f)
+            meta = read_audio_metadata(f)
             tracks_meta.append(meta)
 
         # 按曲号排序

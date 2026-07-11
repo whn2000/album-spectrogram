@@ -4,3 +4,4 @@ gunicorn>=21.0
 mutagen>=1.47
 requests>=2.31
 python-dotenv>=1.0
+torf>=4.2.4

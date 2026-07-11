@@ -20,15 +20,16 @@ from PIL import Image, ImageDraw, ImageFont
 
 logger = logging.getLogger(__name__)
 
+AUDIO_EXTS = {".flac", ".wav", ".ape", ".mp3", ".m4a", ".aac", ".ogg", ".opus", ".alac", ".dsf", ".dff", ".wma", ".wv"}
 
 # ---------------------------------------------------------------------------
 # 1. 文件夹递归扫描
 # ---------------------------------------------------------------------------
 
-def scan_for_flac(root_path: str) -> dict[str, list[str]]:
+def scan_for_audio(root_path: str) -> dict[str, list[str]]:
     """
-    递归扫描目录，查找所有 .flac 文件。
-    按直接父文件夹分组返回：{ folder_path: [sorted .flac paths] }
+    递归扫描目录，查找所有支持的音频文件。
+    按直接父文件夹分组返回：{ folder_path: [sorted audio paths] }
     支持任意深度的嵌套文件夹。
     """
     albums = defaultdict(list)
@@ -39,9 +40,10 @@ def scan_for_flac(root_path: str) -> dict[str, list[str]]:
     if not root.is_dir():
         raise NotADirectoryError(f"不是有效目录: {root_path}")
 
-    for flac_file in sorted(root.rglob("*.flac")):
-        parent = str(flac_file.parent)
-        albums[parent].append(str(flac_file))
+    for file_path in root.rglob("*"):
+        if file_path.suffix.lower() in AUDIO_EXTS:
+            parent = str(file_path.parent)
+            albums[parent].append(str(file_path))
 
     # 每个文件夹内按文件名排序
     for folder in albums:
@@ -54,6 +56,38 @@ def scan_for_flac(root_path: str) -> dict[str, list[str]]:
 # 2. SoX 频谱图生成
 # ---------------------------------------------------------------------------
 
+def _get_audio_duration(audio_path: str) -> float:
+    """
+    使用 ffprobe 获取音频文件时长（秒）。
+    获取失败时返回 0.0，由调用方使用默认超时。
+    """
+    try:
+        result = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", audio_path],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return float(result.stdout.strip())
+    except (subprocess.TimeoutExpired, FileNotFoundError, ValueError):
+        pass
+    return 0.0
+
+def compress_png(filepath: str, max_size_mb: float = 10.0):
+    try:
+        if not os.path.exists(filepath) or os.path.getsize(filepath) <= max_size_mb * 1024 * 1024:
+            return
+        # 尝试 oxipng
+        subprocess.run(["oxipng", "-o", "max", "--strip", "safe", filepath], capture_output=True)
+        if os.path.getsize(filepath) <= max_size_mb * 1024 * 1024:
+            return
+        # 尝试 pngquant
+        subprocess.run(["pngquant", "256", "--force", "--output", filepath, "--", filepath], capture_output=True)
+    except Exception:
+        pass
+
+
 def generate_spectrogram(
     audio_path: str,
     output_path: str,
@@ -62,40 +96,49 @@ def generate_spectrogram(
     dynamic_range: int = 90,
 ) -> str:
     """
-    使用 SoX 生成单个 FLAC 文件的频谱图 PNG。
-
-    命令: sox input.flac -n spectrogram -x <w> -y <h> -z <dB> -o output.png
+    使用 FFmpeg 管道输出给 SoX 生成单曲频谱图。
+    这样可以支持所有 FFmpeg 支持的格式。
     """
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
 
-    cmd = [
-        "sox",
-        audio_path,
-        "-n",
-        "spectrogram",
-        "-x", str(width),
-        "-y", str(height),
-        "-z", str(dynamic_range),
-        "-o", output_path,
+    # 动态计算超时：高码率长音频需要更长的处理时间
+    duration = _get_audio_duration(audio_path)
+    timeout_sec = max(300, int(duration * 3))
+
+    ffmpeg_cmd = ["ffmpeg", "-i", audio_path, "-f", "wav", "-"]
+    sox_cmd = [
+        "sox", "-", "-n", "spectrogram",
+        "-x", str(width), "-y", str(height),
+        "-z", str(dynamic_range), "-o", output_path
     ]
 
     try:
-        result = subprocess.run(
-            cmd,
+        ffmpeg_proc = subprocess.Popen(ffmpeg_cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        sox_proc = subprocess.run(
+            sox_cmd,
+            stdin=ffmpeg_proc.stdout,
             capture_output=True,
             text=True,
-            timeout=300,
+            timeout=timeout_sec,
+        )
+        ffmpeg_proc.stdout.close()
+        ffmpeg_proc.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(
+            f"处理超时 [{os.path.basename(audio_path)}]: "
+            f"音频时长 {duration:.0f}s, 超时限制 {timeout_sec}s。"
         )
     except FileNotFoundError:
         raise RuntimeError(
-            "未找到 sox 命令，请先安装: sudo apt install sox libsox-fmt-all"
+            "未找到 ffmpeg 或 sox 命令，请先安装。"
         )
 
-    if result.returncode != 0:
+    if sox_proc.returncode != 0:
         raise RuntimeError(
-            f"SoX 处理失败 [{os.path.basename(audio_path)}]: {result.stderr.strip()}"
+            f"处理失败 [{os.path.basename(audio_path)}]: {sox_proc.stderr.strip()}"
         )
 
+    compress_png(output_path)
     return output_path
 
 
@@ -247,11 +290,12 @@ def process_album(
     direction = config.get("direction", "vertical")
     gap = int(config.get("gap", 2))
     show_labels = config.get("show_labels", True)
+    stitch = config.get("stitch", True)
 
-    # 扫描 FLAC 文件
-    albums = scan_for_flac(folder_path)
+    # 扫描音频文件
+    albums = scan_for_audio(folder_path)
     if not albums:
-        raise FileNotFoundError(f"在 {folder_path} 中未找到 .flac 文件")
+        raise FileNotFoundError(f"在 {folder_path} 中未找到音频文件")
 
     total_tracks = sum(len(tracks) for tracks in albums.values())
     processed = 0
@@ -283,6 +327,16 @@ def process_album(
                 track_name = os.path.splitext(os.path.basename(track_path))[0]
                 spec_out = os.path.join(tmp_dir, f"{uuid.uuid4().hex}.png")
 
+                # 在 SoX 处理前发送进度消息，防止 SSE 心跳超时
+                if progress_callback:
+                    progress_callback({
+                        "type": "track_start",
+                        "track": track_name,
+                        "album": safe_name,
+                        "processed": processed,
+                        "total": total_tracks,
+                    })
+
                 try:
                     generate_spectrogram(
                         track_path,
@@ -313,35 +367,61 @@ def process_album(
                     c if c.isalnum() or c in (" ", "-", "_", ".") else "_"
                     for c in safe_name
                 )
-                output_filename = f"{clean_name}.png"
-                output_path = os.path.join(output_dir, output_filename)
+                
+                if stitch:
+                    output_filename = f"{clean_name}.png"
+                    output_path = os.path.join(output_dir, output_filename)
 
-                try:
-                    stitch_spectrograms(
-                        spec_paths,
-                        output_path,
-                        direction=direction,
-                        gap=gap,
-                        labels=labels if show_labels else None,
-                    )
+                    try:
+                        stitch_spectrograms(
+                            spec_paths,
+                            output_path,
+                            direction=direction,
+                            gap=gap,
+                            labels=labels if show_labels else None,
+                        )
 
+                        results.append({
+                            "name": safe_name,
+                            "output": output_path,
+                            "filename": output_filename,
+                            "tracks": len(spec_paths),
+                        })
+
+                        if progress_callback:
+                            progress_callback({
+                                "type": "album_done",
+                                "album": safe_name,
+                                "output": output_filename,
+                                "processed": processed,
+                                "total": total_tracks,
+                            })
+                    except Exception as e:
+                        logger.error("拼接失败 [%s]: %s", safe_name, e)
+                else:
+                    # 不拼接，返回每首曲目的频谱图信息
+                    tracks_info = []
+                    for i, spec_path in enumerate(spec_paths):
+                        tracks_info.append({
+                            "name": labels[i],
+                            "output": spec_path,
+                            "filename": os.path.basename(spec_path)
+                        })
+                    
                     results.append({
                         "name": safe_name,
-                        "output": output_path,
-                        "filename": output_filename,
-                        "tracks": len(spec_paths),
+                        "tracks": tracks_info,
+                        "count": len(spec_paths),
                     })
-
+                    
                     if progress_callback:
                         progress_callback({
                             "type": "album_done",
                             "album": safe_name,
-                            "output": output_filename,
+                            "output": f"Multiple files ({len(spec_paths)})",
                             "processed": processed,
                             "total": total_tracks,
                         })
-                except Exception as e:
-                    logger.error("拼接失败 [%s]: %s", safe_name, e)
 
     return {
         "albums": results,

@@ -139,6 +139,83 @@ def upload_to_imgbb(
         "filename": os.path.basename(image_path),
     }
 
+def upload_to_pixhost(image_path: str, name: Optional[str] = None) -> dict:
+    """
+    上传单张图片到 pixhost (无需 API Key)。
+    """
+    if not os.path.isfile(image_path):
+        raise FileNotFoundError(f"图片文件不存在: {image_path}")
+
+    # Pixhost API expects multipart form data with the image in 'img' field and 'content_type=0'
+    files = {
+        'img': (name or os.path.basename(image_path), open(image_path, 'rb'), 'image/png')
+    }
+    data = {
+        'content_type': '0',
+        'max_th_size': '420'
+    }
+
+    last_error = None
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            response = requests.post(
+                "https://api.pixhost.to/images",
+                files=files,
+                data=data,
+                timeout=120,
+            )
+
+            # Need to close the file to avoid leaking file descriptors if requests doesn't
+            files['img'][1].seek(0) # reset for next attempt if needed
+
+            if response.status_code == 200:
+                result = response.json()
+                # Pixhost returns a list of uploaded images, or a list with a single dict
+                if isinstance(result, list) and len(result) > 0 and 'show_url' in result[0]:
+                    img_data = result[0]
+                    # We can construct the direct image URL from the thumbnail URL:
+                    # thumb: https://t{server}.pixhost.to/thumbs/{dir}/{name}
+                    # direct: https://img{server}.pixhost.to/images/{dir}/{name}
+                    thumb_url = img_data.get('th_url', '')
+                    direct_url = thumb_url.replace('/thumbs/', '/images/').replace('https://t', 'https://img')
+                    
+                    return {
+                        "success": True,
+                        "url": direct_url,
+                        "display_url": direct_url,
+                        "viewer_url": img_data.get('show_url', ''),
+                        "thumb_url": thumb_url,
+                        "delete_url": "", # Pixhost doesn't return delete URLs in this simple API
+                        "filename": img_data.get('name', ''),
+                        "size": 0,
+                    }
+                else:
+                    last_error = f"API 返回不符合预期: {result}"
+            else:
+                last_error = f"HTTP {response.status_code}: {response.text[:200]}"
+                
+        except requests.Timeout:
+            last_error = f"请求超时 (尝试 {attempt}/{MAX_RETRIES})"
+            logger.warning(last_error)
+        except requests.ConnectionError as e:
+            last_error = f"连接错误: {e}"
+            logger.warning(last_error)
+        except Exception as e:
+            last_error = f"未知错误: {e}"
+            logger.error(last_error)
+
+        if attempt < MAX_RETRIES:
+            time.sleep(RETRY_DELAY)
+
+    # Make sure to close the file at the end
+    files['img'][1].close()
+
+    return {
+        "success": False,
+        "error": last_error or "上传失败（未知原因）",
+        "filename": os.path.basename(image_path),
+    }
+
 
 # ---------------------------------------------------------------------------
 # 2. 批量上传
@@ -146,21 +223,23 @@ def upload_to_imgbb(
 
 def batch_upload(
     image_paths: list[str],
-    api_key: str,
+    api_key: str = "",
     expiration: Optional[int] = None,
     progress_callback: Optional[Callable] = None,
+    host: str = "imgbb",
 ) -> list[dict]:
     """
-    批量上传多张图片到 imgbb。
+    批量上传多张图片到图床。
 
     参数:
         image_paths:       图片路径列表
-        api_key:           imgbb API Key
+        api_key:           API Key (imgbb 需要)
         expiration:        可选，自动删除时间
         progress_callback: 进度回调 fn(info_dict)
+        host:              'imgbb' 或 'pixhost'
 
     返回:
-        上传结果列表 (与 upload_to_imgbb 返回格式一致)
+        上传结果列表
     """
     results = []
     total = len(image_paths)
@@ -177,12 +256,15 @@ def batch_upload(
                 "total": total,
             })
 
-        result = upload_to_imgbb(
-            path,
-            api_key,
-            name=name,
-            expiration=expiration,
-        )
+        if host == "pixhost":
+            result = upload_to_pixhost(path, name=name)
+        else:
+            result = upload_to_imgbb(
+                path,
+                api_key,
+                name=name,
+                expiration=expiration,
+            )
         result["original_filename"] = filename
         result["original_path"] = path
 

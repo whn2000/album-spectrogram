@@ -35,6 +35,7 @@ from dotenv import load_dotenv
 from spectrogram import process_album, scan_for_flac
 from metadata import extract_tracklist, format_tracklist
 from uploader import batch_upload
+from torrent_maker import create_torrent
 
 # ---------------------------------------------------------------------------
 # 初始化
@@ -111,6 +112,50 @@ def api_scan():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/path", methods=["GET"])
+def api_path():
+    """返回目录内容供前端路径浏览器使用"""
+    path = request.args.get("path", "/")
+    
+    # Handle empty or invalid paths by defaulting to root or current dir
+    if not path or not os.path.isdir(path):
+        # On Windows, returning '/' might not list drives properly, but we'll try our best
+        # For simplicity, if not exists, return root
+        path = os.path.abspath(os.sep)
+
+    entries = []
+    try:
+        # Add parent directory as an option if not at root
+        parent_dir = os.path.dirname(path)
+        if parent_dir != path:
+            entries.append({
+                "name": "..",
+                "path": parent_dir,
+                "is_dir": True,
+                "size": 0
+            })
+
+        for item in sorted(os.listdir(path)):
+            full = os.path.join(path, item)
+            # Skip hidden files
+            if item.startswith('.'):
+                continue
+            is_dir = os.path.isdir(full)
+            size = os.path.getsize(full) if not is_dir and os.path.exists(full) else 0
+            entries.append({
+                "name": item,
+                "path": full,
+                "is_dir": is_dir,
+                "size": size,
+            })
+    except PermissionError:
+        return jsonify({"error": "没有权限访问该目录"}), 403
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+    return jsonify({"path": path, "entries": entries})
+
+
 @app.route("/api/generate", methods=["POST"])
 def api_generate():
     """
@@ -141,16 +186,18 @@ def api_generate():
         "direction": data.get("direction", "vertical"),
         "gap": int(data.get("gap", 2)),
         "show_labels": bool(data.get("show_labels", True)),
+        "stitch": bool(data.get("stitch", True)),
     }
 
     auto_upload = bool(data.get("auto_upload", False))
+    host = data.get("host", "imgbb").strip()
     imgbb_api_key = data.get("imgbb_api_key", "").strip()
     # 如果前端未提供 key，尝试从环境变量获取
-    if auto_upload and not imgbb_api_key:
+    if auto_upload and host == "imgbb" and not imgbb_api_key:
         imgbb_api_key = os.environ.get("IMGBB_API_KEY", "")
 
-    if auto_upload and not imgbb_api_key:
-        return jsonify({"error": "自动上传需要提供 imgbb API Key"}), 400
+    if auto_upload and host == "imgbb" and not imgbb_api_key:
+        return jsonify({"error": "自动上传到 imgbb 需要提供 API Key"}), 400
 
     task_id = uuid.uuid4().hex
     _progress_queues[task_id] = queue.Queue()
@@ -166,15 +213,22 @@ def api_generate():
             )
 
             # 自动上传到图床
-            if auto_upload and imgbb_api_key and result.get("albums"):
-                image_paths = [
-                    a["output"] for a in result["albums"]
-                    if os.path.isfile(a.get("output", ""))
-                ]
+            if auto_upload and result.get("albums"):
+                image_paths = []
+                # If stitched, there is one output per album. If not stitched, there is one output per track.
+                for a in result["albums"]:
+                    if "output" in a and os.path.isfile(a.get("output", "")):
+                        image_paths.append(a["output"])
+                    elif "tracks" in a and isinstance(a["tracks"], list) and len(a["tracks"]) > 0 and isinstance(a["tracks"][0], dict) and "output" in a["tracks"][0]:
+                        for t in a["tracks"]:
+                            if os.path.isfile(t.get("output", "")):
+                                image_paths.append(t["output"])
+
                 if image_paths:
                     upload_results = batch_upload(
                         image_paths,
-                        imgbb_api_key,
+                        api_key=imgbb_api_key,
+                        host=host,
                         progress_callback=lambda info: q.put(json.dumps(info)),
                     )
                     # 将上传结果附加到返回数据
@@ -202,6 +256,66 @@ def api_generate():
     return jsonify({"task_id": task_id, "output_dir": output_dir})
 
 
+@app.route("/api/torrent", methods=["POST"])
+def api_torrent():
+    """
+    启动制种任务（异步）。
+    """
+    data = request.get_json(silent=True) or {}
+    folder_path = data.get("folder_path", "").strip()
+    output_dir = data.get("output_dir", "").strip() or DEFAULT_OUTPUT_DIR
+
+    if not folder_path or not os.path.exists(folder_path):
+        return jsonify({"error": "无效的文件夹路径"}), 400
+
+    trackers = data.get("trackers", [])
+    if isinstance(trackers, str):
+        trackers = [t.strip() for t in trackers.split("\n") if t.strip()]
+
+    web_seeds = data.get("web_seeds", [])
+    if isinstance(web_seeds, str):
+        web_seeds = [w.strip() for w in web_seeds.split("\n") if w.strip()]
+
+    private = bool(data.get("private", True))
+    source = data.get("source", "").strip()
+    comment = data.get("comment", "").strip()
+    piece_size = data.get("piece_size")
+    if piece_size:
+        try:
+            piece_size = int(piece_size) * 1024  # assuming frontend sends KB or we specify bytes. Let's assume bytes from frontend if raw, or let torf handle it. torf expects bytes. Let's assume frontend sends bytes.
+        except:
+            piece_size = None
+
+    task_id = uuid.uuid4().hex
+    _progress_queues[task_id] = queue.Queue()
+
+    def _run():
+        q = _progress_queues[task_id]
+        try:
+            output_path = create_torrent(
+                folder_path,
+                output_dir,
+                trackers=trackers,
+                web_seeds=web_seeds,
+                private=private,
+                source=source,
+                comment=comment,
+                piece_size=piece_size,
+                progress_callback=lambda info: q.put(json.dumps(info))
+            )
+            q.put(json.dumps({"type": "complete", "result": {"torrent_file": os.path.basename(output_path)}}))
+        except Exception as e:
+            logger.exception("制种失败")
+            q.put(json.dumps({"type": "error", "message": str(e)}))
+        finally:
+            q.put(None)
+
+    thread = threading.Thread(target=_run, daemon=True)
+    thread.start()
+
+    return jsonify({"task_id": task_id, "output_dir": output_dir})
+
+
 @app.route("/api/progress/<task_id>")
 def api_progress(task_id):
     """SSE 实时进度推送。"""
@@ -210,15 +324,25 @@ def api_progress(task_id):
 
     def _stream():
         q = _progress_queues[task_id]
+        max_idle = 1800  # 30 分钟无实际消息才断开
+        idle_elapsed = 0
+        heartbeat_interval = 30  # 每 30 秒检查一次
         try:
             while True:
-                msg = q.get(timeout=300)  # 5 分钟超时
-                if msg is None:
-                    yield f"data: {json.dumps({'type': 'end'})}\n\n"
-                    break
-                yield f"data: {msg}\n\n"
-        except queue.Empty:
-            yield f"data: {json.dumps({'type': 'error', 'message': '超时'})}\n\n"
+                try:
+                    msg = q.get(timeout=heartbeat_interval)
+                    idle_elapsed = 0  # 收到消息，重置空闲计时
+                    if msg is None:
+                        yield f"data: {json.dumps({'type': 'end'})}\n\n"
+                        break
+                    yield f"data: {msg}\n\n"
+                except queue.Empty:
+                    idle_elapsed += heartbeat_interval
+                    if idle_elapsed >= max_idle:
+                        yield f"data: {json.dumps({'type': 'error', 'message': '超时：30 分钟无进度更新'})}\n\n"
+                        break
+                    # 发送 SSE 心跳注释，保持连接活跃
+                    yield ": heartbeat\n\n"
         finally:
             _progress_queues.pop(task_id, None)
 
@@ -328,17 +452,17 @@ def api_tracklist_format():
 @app.route("/api/upload", methods=["POST"])
 def api_upload():
     """
-    手动上传图片到 imgbb 图床。
-    请求体: { "image_paths": [...], "api_key": "..." }
+    手动上传图片到图床。
     """
     data = request.get_json(silent=True) or {}
     image_paths = data.get("image_paths", [])
+    host = data.get("host", "imgbb").strip()
     api_key = data.get("api_key", "").strip()
 
-    if not api_key:
+    if host == "imgbb" and not api_key:
         api_key = os.environ.get("IMGBB_API_KEY", "")
 
-    if not api_key:
+    if host == "imgbb" and not api_key:
         return jsonify({"error": "请提供 imgbb API Key"}), 400
 
     if not image_paths:
@@ -350,7 +474,7 @@ def api_upload():
         return jsonify({"error": "没有有效的图片文件"}), 400
 
     try:
-        results = batch_upload(valid_paths, api_key)
+        results = batch_upload(valid_paths, api_key=api_key, host=host)
         upload_data = []
         for r in results:
             if r.get("success"):

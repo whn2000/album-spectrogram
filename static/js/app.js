@@ -12,10 +12,15 @@ document.addEventListener('DOMContentLoaded', () => {
     const cfgGap = document.getElementById('cfg-gap');
     const cfgDirection = document.getElementById('cfg-direction');
     const cfgLabels = document.getElementById('cfg-labels');
+    const cfgStitch = document.getElementById('cfg-stitch');
+    const cfgUploadHost = document.getElementById('cfg-upload-host');
+    const groupImgbbKey = document.getElementById('group-imgbb-key');
     const cfgImgbbKey = document.getElementById('cfg-imgbb-key');
     const cfgAutoUpload = document.getElementById('cfg-auto-upload');
     const cfgRememberKey = document.getElementById('cfg-remember-key');
     const btnToggleKey = document.getElementById('btn-toggle-key');
+    const btnBrowse = document.getElementById('btn-browse');
+    const btnTorrentModal = document.getElementById('btn-torrent-modal');
 
     // Scan results elements
     const scanResultsDiv = document.getElementById('scan-results');
@@ -147,6 +152,17 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
+    // --- Host Toggle ---
+    const updateHostVisibility = () => {
+        if (cfgUploadHost.value === 'imgbb') {
+            groupImgbbKey.style.display = 'block';
+        } else {
+            groupImgbbKey.style.display = 'none';
+        }
+    };
+    cfgUploadHost.addEventListener('change', updateHostVisibility);
+    updateHostVisibility(); // init
+
     // --- Actions ---
 
     // 1. Scan Folder
@@ -206,6 +222,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 `).join('');
                 
                 btnGenerate.disabled = false;
+                btnTorrentModal.disabled = false;
             }
 
             // Show tracklist
@@ -222,6 +239,7 @@ document.addEventListener('DOMContentLoaded', () => {
             scanResultsDiv.classList.add('hidden');
             tracklistSection.classList.add('hidden');
             btnGenerate.disabled = true;
+            btnTorrentModal.disabled = true;
         } finally {
             btnScan.disabled = false;
             btnScan.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg> 扫描`;
@@ -324,12 +342,15 @@ document.addEventListener('DOMContentLoaded', () => {
             gap: parseInt(cfgGap.value) || 2,
             direction: cfgDirection.value,
             show_labels: cfgLabels.checked,
+            stitch: cfgStitch.checked,
             auto_upload: autoUpload,
-            imgbb_api_key: autoUpload ? apiKey : '',
+            host: cfgUploadHost.value,
+            imgbb_api_key: autoUpload && cfgUploadHost.value === 'imgbb' ? apiKey : '',
         };
 
         btnGenerate.disabled = true;
         btnScan.disabled = true;
+        btnTorrentModal.disabled = true;
         currentUploadResults = [];
         uploadResultsDiv.classList.add('hidden');
         resetProgress();
@@ -374,6 +395,9 @@ document.addEventListener('DOMContentLoaded', () => {
                     addLog(`开始处理: ${data.album} (${data.tracks_in_album} 首)`);
                     updateProgress(data.processed, data.total, `正在处理专辑: ${data.album}`);
                     break;
+                case 'track_start':
+                    updateProgress(data.processed, data.total, `正在生成: ${data.track}`);
+                    break;
                 case 'track_done':
                     updateProgress(data.processed, data.total, `生成中: ${data.track}`);
                     break;
@@ -412,12 +436,14 @@ document.addEventListener('DOMContentLoaded', () => {
                     addLog(`发生错误: ${data.message}`, 'error');
                     btnGenerate.disabled = false;
                     btnScan.disabled = false;
+                    btnTorrentModal.disabled = false;
                     source.close();
                     break;
                 case 'end':
                     addLog('连接结束。', 'info');
                     btnGenerate.disabled = false;
                     btnScan.disabled = false;
+                    btnTorrentModal.disabled = false;
                     source.close();
                     break;
             }
@@ -429,6 +455,7 @@ document.addEventListener('DOMContentLoaded', () => {
             source.close();
             btnGenerate.disabled = false;
             btnScan.disabled = false;
+            btnTorrentModal.disabled = false;
         };
     };
 
@@ -534,26 +561,57 @@ document.addEventListener('DOMContentLoaded', () => {
         gallery.innerHTML = '';
         
         albums.forEach(album => {
-            const imgUrl = `/api/image?path=${encodeURIComponent(album.output)}`;
-            
-            const item = document.createElement('div');
-            item.className = 'gallery-item';
-            item.innerHTML = `
-                <div class="gallery-item-header">
-                    <div class="gallery-item-title">${album.name}</div>
-                    <div class="gallery-item-meta">${album.tracks} 首曲目</div>
-                </div>
-                <div class="gallery-item-img-wrap" onclick="openLightbox('${imgUrl}')">
-                    <img src="${imgUrl}" alt="${album.name} 频谱图" loading="lazy">
-                </div>
-                <div class="gallery-item-actions">
-                    <a href="${imgUrl}" download="${album.filename}" class="btn-download" onclick="event.stopPropagation()">
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
-                        保存图片
-                    </a>
-                </div>
-            `;
-            gallery.appendChild(item);
+            if (album.output) {
+                // Stitched image
+                const imgUrl = `/api/image?path=${encodeURIComponent(album.output)}`;
+                const item = document.createElement('div');
+                item.className = 'gallery-item';
+                item.innerHTML = `
+                    <div class="gallery-item-header">
+                        <div class="gallery-item-title">${album.name}</div>
+                        <div class="gallery-item-meta">${album.tracks} 首曲目</div>
+                    </div>
+                    <div class="gallery-item-img-wrap" onclick="openLightbox('${imgUrl}')">
+                        <img src="${imgUrl}" alt="${album.name} 频谱图" loading="lazy">
+                    </div>
+                    <div class="gallery-item-actions">
+                        <a href="${imgUrl}" download="${album.filename}" class="btn-download" onclick="event.stopPropagation()">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+                            保存图片
+                        </a>
+                    </div>
+                `;
+                gallery.appendChild(item);
+            } else if (album.tracks && album.tracks.length > 0) {
+                // Individual tracks
+                const albumHeader = document.createElement('h3');
+                albumHeader.style.width = '100%';
+                albumHeader.style.marginBottom = '10px';
+                albumHeader.style.color = 'var(--text-main)';
+                albumHeader.textContent = album.name;
+                gallery.appendChild(albumHeader);
+
+                album.tracks.forEach(track => {
+                    const imgUrl = `/api/image?path=${encodeURIComponent(track.output)}`;
+                    const item = document.createElement('div');
+                    item.className = 'gallery-item';
+                    item.innerHTML = `
+                        <div class="gallery-item-header">
+                            <div class="gallery-item-title">${track.name}</div>
+                        </div>
+                        <div class="gallery-item-img-wrap" onclick="openLightbox('${imgUrl}')">
+                            <img src="${imgUrl}" alt="${track.name} 频谱图" loading="lazy">
+                        </div>
+                        <div class="gallery-item-actions">
+                            <a href="${imgUrl}" download="${track.filename}" class="btn-download" onclick="event.stopPropagation()">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+                                保存图片
+                            </a>
+                        </div>
+                    `;
+                    gallery.appendChild(item);
+                });
+            }
         });
     };
 
@@ -579,6 +637,186 @@ document.addEventListener('DOMContentLoaded', () => {
         @keyframes spin { 100% { transform: rotate(360deg); } }
         .spin { animation: spin 1s linear infinite; }
         .spin svg { animation: spin 1s linear infinite; }
+        
+        #path-browser-list .pb-item {
+            padding: 8px 12px;
+            cursor: pointer;
+            border-bottom: 1px solid var(--border-color);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        #path-browser-list .pb-item:hover {
+            background-color: var(--hover-bg);
+        }
+        #path-browser-list .pb-item svg {
+            color: var(--accent-color);
+        }
     `;
     document.head.appendChild(style);
+
+    // --- Path Browser Logic ---
+    const pathBrowserModal = document.getElementById('path-browser-modal');
+    const pathBrowserInput = document.getElementById('path-browser-input');
+    const pathBrowserList = document.getElementById('path-browser-list');
+    
+    let currentBrowserPath = '';
+
+    window.closePathBrowser = () => {
+        pathBrowserModal.classList.add('hidden');
+    };
+
+    btnBrowse.addEventListener('click', () => {
+        currentBrowserPath = folderPathInput.value.trim() || '/';
+        loadPath(currentBrowserPath);
+        pathBrowserModal.classList.remove('hidden');
+    });
+
+    window.confirmPathSelection = () => {
+        folderPathInput.value = currentBrowserPath;
+        closePathBrowser();
+    };
+
+    const loadPath = async (targetPath) => {
+        try {
+            pathBrowserList.innerHTML = '<div style="padding: 10px;">Loading...</div>';
+            const res = await fetch(`/api/path?path=${encodeURIComponent(targetPath)}`);
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error || 'Failed to load path');
+            
+            currentBrowserPath = data.path;
+            pathBrowserInput.value = data.path;
+            
+            if (data.entries.length === 0) {
+                pathBrowserList.innerHTML = '<div style="padding: 10px; color: var(--text-secondary);">空目录</div>';
+                return;
+            }
+
+            pathBrowserList.innerHTML = data.entries.map(entry => {
+                const icon = entry.is_dir 
+                    ? `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/></svg>`
+                    : `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V9z"/><polyline points="13 2 13 9 20 9"/></svg>`;
+                
+                return `
+                    <div class="pb-item" onclick="${entry.is_dir ? `window.navPath('${entry.path.replace(/\\/g, '\\\\')}')` : ''}">
+                        ${icon}
+                        <span style="flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${entry.name}</span>
+                        ${!entry.is_dir && entry.size ? `<span style="font-size:12px; color:var(--text-secondary);">${(entry.size/1024/1024).toFixed(2)} MB</span>` : ''}
+                    </div>
+                `;
+            }).join('');
+        } catch (e) {
+            pathBrowserList.innerHTML = `<div style="padding: 10px; color: var(--error-color);">${e.message}</div>`;
+        }
+    };
+
+    window.navPath = (path) => {
+        loadPath(path);
+    };
+
+    // --- Torrent Logic ---
+    const torrentModal = document.getElementById('torrent-modal');
+    const torrentTrackers = document.getElementById('torrent-trackers');
+    const torrentSource = document.getElementById('torrent-source');
+    const torrentPrivate = document.getElementById('torrent-private');
+    const btnCreateTorrent = document.getElementById('btn-create-torrent');
+
+    window.closeTorrentModal = () => {
+        torrentModal.classList.add('hidden');
+    };
+
+    btnTorrentModal.addEventListener('click', () => {
+        torrentModal.classList.remove('hidden');
+    });
+
+    btnCreateTorrent.addEventListener('click', async () => {
+        const folderPath = folderPathInput.value.trim();
+        if (!folderPath) {
+            showToast('请先选择文件夹路径', 'error');
+            return;
+        }
+
+        const config = {
+            folder_path: folderPath,
+            output_dir: outputDirInput.value.trim() || null,
+            trackers: torrentTrackers.value,
+            source: torrentSource.value,
+            private: torrentPrivate.checked
+        };
+
+        btnCreateTorrent.disabled = true;
+        closeTorrentModal();
+        resetProgress();
+        progressSection.classList.remove('hidden');
+        addLog('提交制种任务...', 'info');
+
+        try {
+            const res = await fetch('/api/torrent', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(config)
+            });
+
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error || '制种失败');
+
+            addLog(`任务已启动 (ID: ${data.task_id})`, 'info');
+            listenToTorrentProgress(data.task_id);
+        } catch (e) {
+            addLog(`请求失败: ${e.message}`, 'error');
+            btnCreateTorrent.disabled = false;
+        }
+    });
+
+    const listenToTorrentProgress = (taskId) => {
+        if (currentEventSource) {
+            currentEventSource.close();
+        }
+
+        const source = new EventSource(`/api/progress/${taskId}`);
+        currentEventSource = source;
+
+        source.onmessage = (event) => {
+            const data = JSON.parse(event.data);
+
+            switch (data.type) {
+                case 'torrent_start':
+                    addLog(data.message);
+                    updateProgress(0, 100, data.message);
+                    break;
+                case 'torrent_progress':
+                    if (data.percent !== undefined) {
+                        updateProgress(data.percent, 100, data.message);
+                    } else {
+                        updateProgress(0, 100, data.message);
+                    }
+                    break;
+                case 'torrent_done':
+                    addLog(`制种完成: ${data.output}`, 'success');
+                    updateProgress(100, 100, '制种完成！');
+                    break;
+                case 'complete':
+                    btnCreateTorrent.disabled = false;
+                    source.close();
+                    const torrentUrl = `/api/output-files`; // Provide a way to download, let's just show success for now
+                    showToast('种子已在输出目录生成', 'success');
+                    break;
+                case 'error':
+                    addLog(`错误: ${data.message}`, 'error');
+                    btnCreateTorrent.disabled = false;
+                    source.close();
+                    break;
+                case 'end':
+                    btnCreateTorrent.disabled = false;
+                    source.close();
+                    break;
+            }
+        };
+
+        source.onerror = (error) => {
+            addLog('进度流连接中断', 'error');
+            source.close();
+            btnCreateTorrent.disabled = false;
+        };
+    };
 });
