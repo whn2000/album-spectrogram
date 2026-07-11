@@ -32,7 +32,7 @@ from flask import (
 
 from dotenv import load_dotenv
 
-from spectrogram import process_album, scan_for_flac
+from spectrogram import process_album, scan_for_audio
 from metadata import extract_tracklist, format_tracklist
 from uploader import batch_upload
 from torrent_maker import create_torrent
@@ -90,7 +90,7 @@ def api_scan():
         return jsonify({"error": f"目录不存在: {folder_path}"}), 400
 
     try:
-        albums = scan_for_flac(folder_path)
+        albums = scan_for_audio(folder_path)
         result = []
         for folder, tracks in sorted(albums.items()):
             rel = os.path.relpath(folder, folder_path)
