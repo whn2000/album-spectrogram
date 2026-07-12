@@ -1,6 +1,5 @@
 document.addEventListener('DOMContentLoaded', () => {
     // --- Elements ---
-    const btnScan = document.getElementById('btn-scan');
     const btnGenerate = document.getElementById('btn-generate');
     const folderPathInput = document.getElementById('folder-path');
     const outputDirInput = document.getElementById('output-dir');
@@ -19,7 +18,6 @@ document.addEventListener('DOMContentLoaded', () => {
     const cfgAutoUpload = document.getElementById('cfg-auto-upload');
     const cfgRememberKey = document.getElementById('cfg-remember-key');
     const btnToggleKey = document.getElementById('btn-toggle-key');
-    const btnBrowse = document.getElementById('btn-browse');
     const btnTorrentModal = document.getElementById('btn-torrent-modal');
 
     // Scan results elements
@@ -172,8 +170,12 @@ document.addEventListener('DOMContentLoaded', () => {
         if (scanInProgress) return;
         scanInProgress = true;
 
-        btnScan.disabled = true;
-        btnScan.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="spin"><path d="M21 12a9 9 0 11-6.219-8.56"/></svg> 扫描中...`;
+        // Update path display with scanning indicator
+        const pathEl = document.getElementById('current-path-value');
+        if (pathEl) {
+            pathEl.textContent = folderPath;
+            pathEl.style.color = 'var(--accent-color)';
+        }
 
         try {
             // Parallel: scan files + extract tracklist
@@ -207,6 +209,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 btnGenerate.disabled = true;
                 btnTorrentModal.disabled = true;
                 tracklistSection.classList.add('hidden');
+                if (pathEl) pathEl.style.color = 'var(--error-color)';
             } else {
                 scanSummaryDiv.textContent = `找到 ${scanData.albums.length} 个专辑文件夹，共 ${scanData.total_tracks} 首曲目。`;
                 scanSummaryDiv.style.color = 'var(--success-color)';
@@ -223,6 +226,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
                 btnGenerate.disabled = false;
                 btnTorrentModal.disabled = false;
+                if (pathEl) pathEl.style.color = 'var(--success-color)';
             }
 
             // Show tracklist
@@ -240,21 +244,11 @@ document.addEventListener('DOMContentLoaded', () => {
             tracklistSection.classList.add('hidden');
             btnGenerate.disabled = true;
             btnTorrentModal.disabled = true;
+            if (pathEl) pathEl.style.color = 'var(--error-color)';
         } finally {
-            btnScan.disabled = false;
-            btnScan.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg> 扫描`;
             scanInProgress = false;
         }
     };
-
-    btnScan.addEventListener('click', async () => {
-        const folderPath = folderPathInput.value.trim();
-        if (!folderPath) {
-            showToast('请先输入音频文件夹路径', 'error');
-            return;
-        }
-        doScan(folderPath);
-    });
 
     // 2. Render Tracklist
     const renderTracklist = (albums) => {
@@ -361,7 +355,6 @@ document.addEventListener('DOMContentLoaded', () => {
         };
 
         btnGenerate.disabled = true;
-        btnScan.disabled = true;
         btnTorrentModal.disabled = true;
         currentUploadResults = [];
         uploadResultsDiv.classList.add('hidden');
@@ -386,7 +379,6 @@ document.addEventListener('DOMContentLoaded', () => {
         } catch (error) {
             addLog(`请求失败: ${error.message}`, 'error');
             btnGenerate.disabled = false;
-            btnScan.disabled = false;
         }
     });
 
@@ -439,8 +431,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     addLog(`所有任务完成！共生成 ${data.result.total_albums} 张拼接图。`, 'success');
                     updateProgress(data.result.total_tracks, data.result.total_tracks, '任务完成！');
                     btnGenerate.disabled = false;
-                    btnScan.disabled = false;
-                    source.close();
+                            source.close();
                     renderGallery(data.result.albums);
                     // Show upload results if any
                     if (currentUploadResults.length > 0) {
@@ -451,15 +442,13 @@ document.addEventListener('DOMContentLoaded', () => {
                 case 'error':
                     addLog(`发生错误: ${data.message}`, 'error');
                     btnGenerate.disabled = false;
-                    btnScan.disabled = false;
-                    btnTorrentModal.disabled = false;
+                            btnTorrentModal.disabled = false;
                     source.close();
                     break;
                 case 'end':
                     addLog('连接结束。', 'info');
                     btnGenerate.disabled = false;
-                    btnScan.disabled = false;
-                    btnTorrentModal.disabled = false;
+                            btnTorrentModal.disabled = false;
                     source.close();
                     break;
             }
@@ -470,7 +459,6 @@ document.addEventListener('DOMContentLoaded', () => {
             addLog('进度流连接中断', 'error');
             source.close();
             btnGenerate.disabled = false;
-            btnScan.disabled = false;
             btnTorrentModal.disabled = false;
         };
     };
@@ -647,120 +635,237 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     };
     
-    // Add some spin animation for loading
-    const style = document.createElement('style');
-    style.innerHTML = `
-        @keyframes spin { 100% { transform: rotate(360deg); } }
-        .spin { animation: spin 1s linear infinite; }
-        .spin svg { animation: spin 1s linear infinite; }
-        
-        #path-browser-list .pb-item {
-            padding: 8px 12px;
-            cursor: pointer;
-            border-bottom: 1px solid var(--border-color);
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
-        #path-browser-list .pb-item:hover {
-            background-color: var(--hover-bg);
-        }
-        #path-browser-list .pb-item svg {
-            color: var(--accent-color);
-        }
-    `;
-    document.head.appendChild(style);
+    // --- Sidebar Directory Browser ---
+    const sidebarSearchInput = document.getElementById('sidebar-search-input');
+    const sidebarBreadcrumb = document.getElementById('sidebar-breadcrumb');
+    const sidebarFolderList = document.getElementById('sidebar-folder-list');
+    const btnRefreshDir = document.getElementById('btn-refresh-dir');
 
-    // --- Path Browser Logic ---
-    const pathBrowserModal = document.getElementById('path-browser-modal');
-    const pathBrowserInput = document.getElementById('path-browser-input');
-    const pathBrowserList = document.getElementById('path-browser-list');
+    let currentSidebarPath = '';
+    let sidebarEntries = [];
+    let browseRoot = '';
+    let sidebarSearchTimer = null;
 
-    let currentBrowserPath = '';
-    let browseRoot = '';  // 服务端配置的浏览根目录
-    let debounceTimer = null;  // 用于手动输入路径时的防抖扫描
-    let suppressAutoScan = false;  // 防止程序化修改路径时重复触发扫描
-
-    window.closePathBrowser = () => {
-        pathBrowserModal.classList.add('hidden');
-    };
-
-    btnBrowse.addEventListener('click', async () => {
-        // 首次打开时获取 Browse Root
-        if (!browseRoot) {
-            try {
-                const res = await fetch('/api/path');
-                const data = await res.json();
-                if (data.browse_root) {
-                    browseRoot = data.browse_root;
-                }
-            } catch (e) {}
-        }
-        currentBrowserPath = folderPathInput.value.trim() || browseRoot || '/';
-        loadPath(currentBrowserPath);
-        pathBrowserModal.classList.remove('hidden');
-    });
-
-    window.confirmPathSelection = () => {
-        suppressAutoScan = true;  // 防止设置 value 时触发 input 事件导致重复扫描
-        folderPathInput.value = currentBrowserPath;
-        suppressAutoScan = false;
-        closePathBrowser();
-        // 选中文件夹后自动触发扫描，无需再手动点击扫描按钮
-        if (currentBrowserPath) {
-            doScan(currentBrowserPath);
-        }
-    };
-
-    // 手动输入路径时，防抖自动扫描（停止输入 600ms 后自动触发）
-    folderPathInput.addEventListener('input', () => {
-        if (suppressAutoScan) return;
-        clearTimeout(debounceTimer);
-        const val = folderPathInput.value.trim();
-        if (!val) return;
-        debounceTimer = setTimeout(() => {
-            doScan(val);
-        }, 600);
-    });
-
-    const loadPath = async (targetPath) => {
+    // Load directory contents into sidebar
+    const loadSidebarPath = async (targetPath) => {
         try {
-            pathBrowserList.innerHTML = '<div style="padding: 10px;">Loading...</div>';
+            sidebarFolderList.innerHTML = '<div class="sidebar-placeholder">加载中...</div>';
             const res = await fetch(`/api/path?path=${encodeURIComponent(targetPath)}`);
             const data = await res.json();
             if (!res.ok) throw new Error(data.error || 'Failed to load path');
 
-            currentBrowserPath = data.path;
-            pathBrowserInput.value = data.path;
+            currentSidebarPath = data.path;
+            sidebarEntries = data.entries || [];
             if (data.browse_root) {
                 browseRoot = data.browse_root;
             }
 
-            if (data.entries.length === 0) {
-                pathBrowserList.innerHTML = '<div style="padding: 10px; color: var(--text-secondary);">空目录</div>';
-                return;
-            }
-
-            pathBrowserList.innerHTML = data.entries.map(entry => {
-                const icon = entry.is_dir
-                    ? `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/></svg>`
-                    : `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V9z"/><polyline points="13 2 13 9 20 9"/></svg>`;
-
-                return `
-                    <div class="pb-item" onclick="${entry.is_dir ? `window.navPath('${entry.path.replace(/\\/g, '\\\\')}')` : ''}">
-                        ${icon}
-                        <span style="flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${entry.name}</span>
-                    </div>
-                `;
-            }).join('');
+            renderBreadcrumb(data.path);
+            renderFolderList(sidebarSearchInput.value.trim());
         } catch (e) {
-            pathBrowserList.innerHTML = `<div style="padding: 10px; color: var(--error-color);">${e.message}</div>`;
+            sidebarFolderList.innerHTML = `<div class="sidebar-placeholder" style="color: var(--error-color);">${e.message}</div>`;
+            sidebarBreadcrumb.innerHTML = '';
         }
     };
 
-    window.navPath = (path) => {
-        loadPath(path);
+    // Render clickable breadcrumb path
+    const renderBreadcrumb = (path) => {
+        const normalized = path.replace(/\\/g, '/');
+        const rootBase = browseRoot ? browseRoot.replace(/\\/g, '/').replace(/\/$/, '') : '';
+        const segments = normalized.replace(/\/$/, '').split('/').filter(s => s);
+
+        // Build parts: each segment's full path
+        const parts = [];
+        let accumulated = '';
+        for (const seg of segments) {
+            if (accumulated === '') {
+                // Unix root or Windows drive
+                if (/^[a-zA-Z]$/.test(seg)) {
+                    accumulated = seg + ':/';
+                } else {
+                    accumulated = '/' + seg;
+                }
+            } else if (accumulated.endsWith(':/')) {
+                accumulated = accumulated + seg;
+            } else {
+                accumulated = accumulated + '/' + seg;
+            }
+            parts.push({ name: seg, path: accumulated });
+        }
+
+        if (parts.length === 0) {
+            sidebarBreadcrumb.innerHTML = '<span class="breadcrumb-current">/</span>';
+            return;
+        }
+
+        sidebarBreadcrumb.innerHTML = parts.map((p, i) => {
+            if (i === parts.length - 1) {
+                return `<span class="breadcrumb-current">${p.name}</span>`;
+            }
+            return `<span class="breadcrumb-seg" data-nav="${p.path.replace(/"/g, '&quot;')}">${p.name}</span><span class="breadcrumb-sep">/</span>`;
+        }).join('');
+
+        // Wire breadcrumb clicks via event delegation
+        sidebarBreadcrumb.querySelectorAll('.breadcrumb-seg').forEach(el => {
+            el.addEventListener('click', () => {
+                const navPath = el.dataset.nav;
+                if (navPath) navigateToFolder(navPath);
+            });
+        });
     };
+
+    // Fuzzy match: subsequence scoring (lower = better)
+    const fuzzyMatchScore = (text, query) => {
+        const t = text.toLowerCase();
+        const q = query.toLowerCase();
+        let ti = 0, score = 0, prevMatch = -1;
+        for (let qi = 0; qi < q.length; qi++) {
+            let found = false;
+            while (ti < t.length) {
+                if (t[ti] === q[qi]) {
+                    if (prevMatch >= 0) score += (ti - prevMatch - 1);
+                    prevMatch = ti;
+                    ti++;
+                    found = true;
+                    break;
+                }
+                ti++;
+            }
+            if (!found) return Infinity;
+        }
+        // Bonus: prefer matches that start earlier
+        if (prevMatch >= 0 && t.indexOf(q[0]) === 0) score -= 1;
+        return score;
+    };
+
+    // Highlight matching characters in folder name
+    const highlightMatch = (name, query) => {
+        if (!query || !query.trim()) return name;
+        const t = name.toLowerCase();
+        const q = query.toLowerCase();
+        const matches = [];
+        let ti = 0;
+        for (let qi = 0; qi < q.length; qi++) {
+            while (ti < t.length) {
+                if (t[ti] === q[qi]) {
+                    matches.push(ti);
+                    ti++;
+                    break;
+                }
+                ti++;
+            }
+        }
+        if (matches.length === 0) return name;
+
+        let result = '';
+        let mi = 0;
+        for (let i = 0; i < name.length; i++) {
+            if (mi < matches.length && i === matches[mi]) {
+                result += `<span class="match-highlight">${name[i]}</span>`;
+                mi++;
+            } else {
+                result += name[i];
+            }
+        }
+        return result;
+    };
+
+    // Filter and render folder entries
+    const renderFolderList = (query) => {
+        if (sidebarEntries.length === 0) {
+            sidebarFolderList.innerHTML = '<div class="sidebar-empty">空目录</div>';
+            return;
+        }
+
+        const parentEntry = sidebarEntries.find(e => e.name === '..');
+        const folders = sidebarEntries.filter(e => e.name !== '..');
+
+        let displayEntries;
+        if (query) {
+            const scored = folders.map(entry => ({
+                entry,
+                score: fuzzyMatchScore(entry.name, query)
+            })).filter(item => item.score !== Infinity);
+
+            scored.sort((a, b) => {
+                if (a.score !== b.score) return a.score - b.score;
+                return a.entry.name.localeCompare(b.entry.name);
+            });
+
+            displayEntries = scored.map(item => item.entry);
+            if (parentEntry) displayEntries.unshift(parentEntry);
+
+            if (displayEntries.length === 0 || (displayEntries.length === 1 && parentEntry)) {
+                sidebarFolderList.innerHTML = '<div class="sidebar-empty">未找到匹配的文件夹</div>';
+                return;
+            }
+        } else {
+            // Sort alphabetically, folders with '..' first
+            folders.sort((a, b) => a.name.localeCompare(b.name));
+            displayEntries = parentEntry ? [parentEntry, ...folders] : folders;
+        }
+
+        sidebarFolderList.innerHTML = displayEntries.map(entry => {
+            const isParent = entry.name === '..';
+            const icon = isParent
+                ? `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>`
+                : `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/></svg>`;
+            const isActive = !isParent && entry.path === currentSidebarPath;
+            const displayName = isParent ? '..' : (query ? highlightMatch(entry.name, query) : entry.name);
+
+            return `
+                <div class="folder-entry${isParent ? ' parent-entry' : ''}${isActive ? ' active' : ''}" data-path="${entry.path.replace(/"/g, '&quot;')}">
+                    ${icon}
+                    <span class="folder-name">${displayName}</span>
+                </div>
+            `;
+        }).join('');
+
+        // Wire folder clicks via event delegation
+        sidebarFolderList.querySelectorAll('.folder-entry').forEach(el => {
+            el.addEventListener('click', () => {
+                const navPath = el.dataset.path;
+                if (navPath) navigateToFolder(navPath);
+            });
+        });
+    };
+
+    // Navigate to folder and auto-scan
+    const navigateToFolder = async (path) => {
+        folderPathInput.value = path;
+        await loadSidebarPath(path);
+        if (path) doScan(path);
+    };
+
+    // Refresh current directory
+    btnRefreshDir.addEventListener('click', () => {
+        if (currentSidebarPath) {
+            loadSidebarPath(currentSidebarPath);
+        }
+    });
+
+    // Fuzzy search input: debounce 150ms then filter
+    sidebarSearchInput.addEventListener('input', () => {
+        clearTimeout(sidebarSearchTimer);
+        sidebarSearchTimer = setTimeout(() => {
+            renderFolderList(sidebarSearchInput.value.trim());
+        }, 150);
+    });
+
+    // Initialize sidebar on page load
+    (async () => {
+        try {
+            const res = await fetch('/api/path');
+            const data = await res.json();
+            if (data.browse_root) {
+                browseRoot = data.browse_root;
+            }
+            const initPath = folderPathInput.value.trim() || browseRoot || '/';
+            await loadSidebarPath(initPath);
+        } catch (e) {
+            sidebarFolderList.innerHTML = '<div class="sidebar-placeholder" style="color: var(--error-color);">无法加载目录</div>';
+        }
+    })();
 
     // --- Torrent Logic ---
     const torrentModal = document.getElementById('torrent-modal');
