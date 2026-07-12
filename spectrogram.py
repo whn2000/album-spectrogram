@@ -8,6 +8,7 @@ spectrogram.py — 核心逻辑：SoX 频谱图生成 + Pillow 图片拼接
 """
 
 import os
+import shutil
 import subprocess
 import uuid
 import logging
@@ -96,8 +97,9 @@ def generate_spectrogram(
     dynamic_range: int = 90,
 ) -> str:
     """
-    使用 FFmpeg 管道输出给 SoX 生成单曲频谱图。
-    这样可以支持所有 FFmpeg 支持的格式。
+    使用 FFmpeg 解码为临时 WAV，再交给 SoX 生成频谱图。
+    这样可以支持所有 FFmpeg 支持的格式，同时避免 Windows 下
+    subprocess 管道链的二进制数据传递问题。
     """
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
 
@@ -105,24 +107,46 @@ def generate_spectrogram(
     duration = _get_audio_duration(audio_path)
     timeout_sec = max(300, int(duration * 3))
 
-    ffmpeg_cmd = ["ffmpeg", "-i", audio_path, "-f", "wav", "-"]
-    sox_cmd = [
-        "sox", "-", "-n", "spectrogram",
-        "-x", str(width), "-y", str(height),
-        "-z", str(dynamic_range), "-o", output_path
-    ]
+    # Step 1: 用 ffmpeg 解码音频为临时 WAV 文件
+    # （避免 subprocess Popen→run 管道在 Windows 上传递二进制数据时损坏）
+    tmp_wav_path = os.path.join(
+        os.path.dirname(output_path),
+        f".tmp_{uuid.uuid4().hex}.wav",
+    )
 
     try:
-        ffmpeg_proc = subprocess.Popen(ffmpeg_cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        ffmpeg_cmd = [
+            "ffmpeg", "-y", "-i", audio_path,
+            "-f", "wav", tmp_wav_path,
+        ]
+        ffmpeg_proc = subprocess.run(
+            ffmpeg_cmd,
+            capture_output=True,
+            timeout=max(30, timeout_sec),
+        )
+        if ffmpeg_proc.returncode != 0:
+            raise RuntimeError(
+                f"ffmpeg 解码失败 [{os.path.basename(audio_path)}]: "
+                f"{ffmpeg_proc.stderr.decode(errors='replace').strip()}"
+            )
+
+        # Step 2: 用 sox 从 WAV 文件生成频谱图
+        sox_cmd = [
+            "sox", tmp_wav_path, "-n", "spectrogram",
+            "-x", str(width), "-y", str(height),
+            "-z", str(dynamic_range), "-o", output_path,
+        ]
         sox_proc = subprocess.run(
             sox_cmd,
-            stdin=ffmpeg_proc.stdout,
             capture_output=True,
-            text=True,
             timeout=timeout_sec,
         )
-        ffmpeg_proc.stdout.close()
-        ffmpeg_proc.wait(timeout=10)
+
+        if sox_proc.returncode != 0:
+            raise RuntimeError(
+                f"sox 处理失败 [{os.path.basename(audio_path)}]: "
+                f"{sox_proc.stderr.decode(errors='replace').strip()}"
+            )
     except subprocess.TimeoutExpired:
         raise RuntimeError(
             f"处理超时 [{os.path.basename(audio_path)}]: "
@@ -132,11 +156,12 @@ def generate_spectrogram(
         raise RuntimeError(
             "未找到 ffmpeg 或 sox 命令，请先安装。"
         )
-
-    if sox_proc.returncode != 0:
-        raise RuntimeError(
-            f"处理失败 [{os.path.basename(audio_path)}]: {sox_proc.stderr.strip()}"
-        )
+    finally:
+        # 清理临时 WAV 文件
+        try:
+            os.unlink(tmp_wav_path)
+        except OSError:
+            pass
 
     compress_png(output_path)
     return output_path
@@ -349,6 +374,15 @@ def process_album(
                     labels.append(track_name)
                 except Exception as e:
                     logger.error("频谱图生成失败 [%s]: %s", track_path, e)
+                    if progress_callback:
+                        progress_callback({
+                            "type": "track_error",
+                            "track": track_name,
+                            "album": safe_name,
+                            "error": str(e),
+                            "processed": processed,
+                            "total": total_tracks,
+                        })
 
                 processed += 1
                 if progress_callback:
@@ -399,21 +433,26 @@ def process_album(
                     except Exception as e:
                         logger.error("拼接失败 [%s]: %s", safe_name, e)
                 else:
-                    # 不拼接，返回每首曲目的频谱图信息
+                    # 不拼接，将频谱图复制到输出目录（避免 temp dir 清理后丢失）
                     tracks_info = []
                     for i, spec_path in enumerate(spec_paths):
+                        dst_name = f"{clean_name}_{labels[i]}.png".replace(
+                            os.sep, "_"
+                        ).replace("/", "_")
+                        dst_path = os.path.join(output_dir, dst_name)
+                        shutil.copy2(spec_path, dst_path)
                         tracks_info.append({
                             "name": labels[i],
-                            "output": spec_path,
-                            "filename": os.path.basename(spec_path)
+                            "output": dst_path,
+                            "filename": dst_name,
                         })
-                    
+
                     results.append({
                         "name": safe_name,
                         "tracks": tracks_info,
                         "count": len(spec_paths),
                     })
-                    
+
                     if progress_callback:
                         progress_callback({
                             "type": "album_done",

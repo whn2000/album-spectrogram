@@ -23,6 +23,8 @@ services:
     environment:
       # 时区设置（按你的 NAS 所在时区调整）
       - TZ=Asia/Shanghai
+      # 路径浏览器根目录，配合 volumes 映射使用
+      - BROWSE_ROOT=/music
 
     volumes:
       # 音乐文件目录 — 将 NAS 上的音乐路径映射进容器

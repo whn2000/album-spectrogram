@@ -324,9 +324,11 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!folderPath) return;
 
         const autoUpload = cfgAutoUpload.checked;
+        const host = cfgUploadHost.value;
         const apiKey = cfgImgbbKey.value.trim();
 
-        if (autoUpload && !apiKey) {
+        // 仅 imgbb 需要 API Key，pixhost 无需
+        if (autoUpload && host === 'imgbb' && !apiKey) {
             showToast('请先输入 imgbb API Key', 'error');
             cfgImgbbKey.focus();
             return;
@@ -344,7 +346,7 @@ document.addEventListener('DOMContentLoaded', () => {
             show_labels: cfgLabels.checked,
             stitch: cfgStitch.checked,
             auto_upload: autoUpload,
-            host: cfgUploadHost.value,
+            host: host,
             imgbb_api_key: autoUpload && cfgUploadHost.value === 'imgbb' ? apiKey : '',
         };
 
@@ -400,6 +402,10 @@ document.addEventListener('DOMContentLoaded', () => {
                     break;
                 case 'track_done':
                     updateProgress(data.processed, data.total, `生成中: ${data.track}`);
+                    break;
+                case 'track_error':
+                    addLog(`曲目失败: ${data.track} — ${data.error}`, 'error');
+                    updateProgress(data.processed, data.total, `失败: ${data.track}`);
                     break;
                 case 'album_done':
                     addLog(`专辑拼接完成: ${data.output}`, 'success');
@@ -659,15 +665,26 @@ document.addEventListener('DOMContentLoaded', () => {
     const pathBrowserModal = document.getElementById('path-browser-modal');
     const pathBrowserInput = document.getElementById('path-browser-input');
     const pathBrowserList = document.getElementById('path-browser-list');
-    
+
     let currentBrowserPath = '';
+    let browseRoot = '';  // 服务端配置的浏览根目录
 
     window.closePathBrowser = () => {
         pathBrowserModal.classList.add('hidden');
     };
 
-    btnBrowse.addEventListener('click', () => {
-        currentBrowserPath = folderPathInput.value.trim() || '/';
+    btnBrowse.addEventListener('click', async () => {
+        // 首次打开时获取 Browse Root
+        if (!browseRoot) {
+            try {
+                const res = await fetch('/api/path');
+                const data = await res.json();
+                if (data.browse_root) {
+                    browseRoot = data.browse_root;
+                }
+            } catch (e) {}
+        }
+        currentBrowserPath = folderPathInput.value.trim() || browseRoot || '/';
         loadPath(currentBrowserPath);
         pathBrowserModal.classList.remove('hidden');
     });
@@ -683,25 +700,27 @@ document.addEventListener('DOMContentLoaded', () => {
             const res = await fetch(`/api/path?path=${encodeURIComponent(targetPath)}`);
             const data = await res.json();
             if (!res.ok) throw new Error(data.error || 'Failed to load path');
-            
+
             currentBrowserPath = data.path;
             pathBrowserInput.value = data.path;
-            
+            if (data.browse_root) {
+                browseRoot = data.browse_root;
+            }
+
             if (data.entries.length === 0) {
                 pathBrowserList.innerHTML = '<div style="padding: 10px; color: var(--text-secondary);">空目录</div>';
                 return;
             }
 
             pathBrowserList.innerHTML = data.entries.map(entry => {
-                const icon = entry.is_dir 
+                const icon = entry.is_dir
                     ? `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/></svg>`
                     : `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V9z"/><polyline points="13 2 13 9 20 9"/></svg>`;
-                
+
                 return `
                     <div class="pb-item" onclick="${entry.is_dir ? `window.navPath('${entry.path.replace(/\\/g, '\\\\')}')` : ''}">
                         ${icon}
                         <span style="flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${entry.name}</span>
-                        ${!entry.is_dir && entry.size ? `<span style="font-size:12px; color:var(--text-secondary);">${(entry.size/1024/1024).toFixed(2)} MB</span>` : ''}
                     </div>
                 `;
             }).join('');

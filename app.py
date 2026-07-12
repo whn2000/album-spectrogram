@@ -56,6 +56,11 @@ DEFAULT_OUTPUT_DIR = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "output"
 )
 
+# 路径浏览器的根目录，用于限制浏览范围（Docker 中通常为 /music）
+BROWSE_ROOT = os.environ.get("BROWSE_ROOT", "").strip()
+if BROWSE_ROOT and not os.path.isdir(BROWSE_ROOT):
+    BROWSE_ROOT = ""  # 配置了但目录不存在，回退到无限制
+
 # 存储每个任务的进度队列
 _progress_queues: dict[str, queue.Queue] = {}
 
@@ -114,46 +119,63 @@ def api_scan():
 
 @app.route("/api/path", methods=["GET"])
 def api_path():
-    """返回目录内容供前端路径浏览器使用"""
-    path = request.args.get("path", "/")
-    
-    # Handle empty or invalid paths by defaulting to root or current dir
-    if not path or not os.path.isdir(path):
-        # On Windows, returning '/' might not list drives properly, but we'll try our best
-        # For simplicity, if not exists, return root
-        path = os.path.abspath(os.sep)
+    """返回目录内容供前端路径浏览器使用（仅显示文件夹，限制在 BROWSE_ROOT 内）"""
+    path = request.args.get("path", BROWSE_ROOT or "/")
+
+    # 如果配置了 BROWSE_ROOT，确保不越界
+    if BROWSE_ROOT:
+        # 规范化路径
+        browse_root = os.path.abspath(BROWSE_ROOT)
+        if not path or not os.path.isdir(path):
+            path = browse_root
+        # 防止路径遍历攻击：不允许访问 BROWSE_ROOT 之外的目录
+        abs_path = os.path.abspath(path)
+        if not abs_path.startswith(browse_root):
+            path = browse_root
+    else:
+        if not path or not os.path.isdir(path):
+            path = os.path.abspath(os.sep)
 
     entries = []
     try:
-        # Add parent directory as an option if not at root
+        # 上级目录（仅当不在 BROWSE_ROOT 时显示）
         parent_dir = os.path.dirname(path)
-        if parent_dir != path:
+        can_go_up = parent_dir != path
+        if BROWSE_ROOT:
+            browse_root = os.path.abspath(BROWSE_ROOT)
+            abs_parent = os.path.abspath(parent_dir)
+            # 如果上级目录不在浏览根内，不允许返回
+            if not abs_parent.startswith(browse_root):
+                can_go_up = False
+
+        if can_go_up:
             entries.append({
                 "name": "..",
                 "path": parent_dir,
                 "is_dir": True,
-                "size": 0
+                "size": 0,
             })
 
         for item in sorted(os.listdir(path)):
             full = os.path.join(path, item)
-            # Skip hidden files
-            if item.startswith('.'):
+            # 跳过隐藏文件
+            if item.startswith("."):
                 continue
-            is_dir = os.path.isdir(full)
-            size = os.path.getsize(full) if not is_dir and os.path.exists(full) else 0
+            # 仅显示文件夹
+            if not os.path.isdir(full):
+                continue
             entries.append({
                 "name": item,
                 "path": full,
-                "is_dir": is_dir,
-                "size": size,
+                "is_dir": True,
+                "size": 0,
             })
     except PermissionError:
         return jsonify({"error": "没有权限访问该目录"}), 403
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-    return jsonify({"path": path, "entries": entries})
+    return jsonify({"path": path, "entries": entries, "browse_root": BROWSE_ROOT or None})
 
 
 @app.route("/api/generate", methods=["POST"])
