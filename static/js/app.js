@@ -165,17 +165,16 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // --- Actions ---
 
-    // 1. Scan Folder
-    btnScan.addEventListener('click', async () => {
-        const folderPath = folderPathInput.value.trim();
-        if (!folderPath) {
-            showToast('请先输入 FLAC 文件夹路径', 'error');
-            return;
-        }
+    // 1. Scan Folder (reusable function)
+    let scanInProgress = false;
+
+    const doScan = async (folderPath) => {
+        if (scanInProgress) return;
+        scanInProgress = true;
 
         btnScan.disabled = true;
         btnScan.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="spin"><path d="M21 12a9 9 0 11-6.219-8.56"/></svg> 扫描中...`;
-        
+
         try {
             // Parallel: scan files + extract tracklist
             const [scanRes, tracklistRes] = await Promise.all([
@@ -200,17 +199,18 @@ document.addEventListener('DOMContentLoaded', () => {
 
             // Show scan results
             scanResultsDiv.classList.remove('hidden');
-            
+
             if (scanData.albums.length === 0) {
-                scanSummaryDiv.textContent = '未找到 FLAC 文件。';
+                scanSummaryDiv.textContent = '未找到音频文件。';
                 scanSummaryDiv.style.color = 'var(--error-color)';
                 albumTreeDiv.innerHTML = '';
                 btnGenerate.disabled = true;
+                btnTorrentModal.disabled = true;
                 tracklistSection.classList.add('hidden');
             } else {
                 scanSummaryDiv.textContent = `找到 ${scanData.albums.length} 个专辑文件夹，共 ${scanData.total_tracks} 首曲目。`;
                 scanSummaryDiv.style.color = 'var(--success-color)';
-                
+
                 albumTreeDiv.innerHTML = scanData.albums.map(album => `
                     <div class="tree-folder">
                         <div class="tree-folder-name">
@@ -220,7 +220,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         <div class="tree-tracks">${album.count} 首曲目</div>
                     </div>
                 `).join('');
-                
+
                 btnGenerate.disabled = false;
                 btnTorrentModal.disabled = false;
             }
@@ -243,7 +243,17 @@ document.addEventListener('DOMContentLoaded', () => {
         } finally {
             btnScan.disabled = false;
             btnScan.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg> 扫描`;
+            scanInProgress = false;
         }
+    };
+
+    btnScan.addEventListener('click', async () => {
+        const folderPath = folderPathInput.value.trim();
+        if (!folderPath) {
+            showToast('请先输入音频文件夹路径', 'error');
+            return;
+        }
+        doScan(folderPath);
     });
 
     // 2. Render Tracklist
@@ -668,6 +678,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
     let currentBrowserPath = '';
     let browseRoot = '';  // 服务端配置的浏览根目录
+    let debounceTimer = null;  // 用于手动输入路径时的防抖扫描
+    let suppressAutoScan = false;  // 防止程序化修改路径时重复触发扫描
 
     window.closePathBrowser = () => {
         pathBrowserModal.classList.add('hidden');
@@ -690,9 +702,26 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     window.confirmPathSelection = () => {
+        suppressAutoScan = true;  // 防止设置 value 时触发 input 事件导致重复扫描
         folderPathInput.value = currentBrowserPath;
+        suppressAutoScan = false;
         closePathBrowser();
+        // 选中文件夹后自动触发扫描，无需再手动点击扫描按钮
+        if (currentBrowserPath) {
+            doScan(currentBrowserPath);
+        }
     };
+
+    // 手动输入路径时，防抖自动扫描（停止输入 600ms 后自动触发）
+    folderPathInput.addEventListener('input', () => {
+        if (suppressAutoScan) return;
+        clearTimeout(debounceTimer);
+        const val = folderPathInput.value.trim();
+        if (!val) return;
+        debounceTimer = setTimeout(() => {
+            doScan(val);
+        }, 600);
+    });
 
     const loadPath = async (targetPath) => {
         try {
